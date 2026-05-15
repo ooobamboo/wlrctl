@@ -175,7 +175,7 @@ main(int argc, char *argv[])
 	state.running = true;
 	state.display = wl_display_connect(NULL);
 	if (!state.display)
-		die("Could not connect to wayland display");
+		die("Could not connect to wayland display\n");
 
 	state.registry = wl_display_get_registry(state.display);
 	wl_registry_add_listener(state.registry, &wl_registry_listener, &state);
