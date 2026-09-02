@@ -23,6 +23,7 @@ parse_action(const char *action)
 		{"find",       TOPLEVEL_ACTION_FIND      },
 		{"focus",      TOPLEVEL_ACTION_ACTIVATE  },
 		{"fullscreen", TOPLEVEL_ACTION_FULLSCREEN},
+		{"unfullscreen", TOPLEVEL_ACTION_UNFULLSCREEN},
 		{"list",       TOPLEVEL_ACTION_LIST      },
 		{"maximize",   TOPLEVEL_ACTION_MAXIMIZE  },
 		{"minimize",   TOPLEVEL_ACTION_MINIMIZE  },
@@ -301,6 +302,9 @@ zwlr_foreign_toplevel_handle_v1_handle_done(void *user_data,
 		break;
 	case TOPLEVEL_ACTION_FULLSCREEN:
 		zwlr_foreign_toplevel_handle_v1_set_fullscreen(toplevel, NULL);
+		break;
+	case TOPLEVEL_ACTION_UNFULLSCREEN:
+		zwlr_foreign_toplevel_handle_v1_unset_fullscreen(toplevel);
 		break;
 	case TOPLEVEL_ACTION_CLOSE:
 		zwlr_foreign_toplevel_handle_v1_close(toplevel);

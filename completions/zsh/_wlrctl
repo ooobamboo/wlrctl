@@ -31,7 +31,7 @@ local -a wlrcmd_toplevel_attr=(/$'[^\0]#\0'/ ':_wlr_toplevel_attr' '#')
 
 local -a wlrcmd_toplevel
 _regex_words action 'toplevel action' 'maximize' 'minimize' 'focus' \
-	'activate' 'fullscreen' 'close' 'list' 'find' 'wait' 'waitfor'
+	'activate' 'fullscreen' 'unfullscreen' 'close' 'list' 'find' 'wait' 'waitfor'
 wlrcmd_toplevel=( "$reply[@]" "$wlrcmd_toplevel_attr[@]" )
 
 local -a wlrcmd_output
