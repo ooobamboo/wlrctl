@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <ctype.h>
 #include <fcntl.h>
+#include <locale.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,6 +10,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <wchar.h>
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
 #include "common.h"
@@ -17,49 +19,130 @@
 
 #include "virtual-keyboard-unstable-v1-client-protocol.h"
 
-extern const char keymap_ascii_raw[];
-
 static void
-get_keymap(struct wlrctl_keyboard_command *cmd)
+print_keysym_name(xkb_keysym_t keysym, FILE *f)
 {
-	int size = strlen(keymap_ascii_raw) + 1;
-#if defined(MEMFD_CREATE)
-	int fd = memfd_create("keymap", 0);
-#elif defined(__FreeBSD__)
-	// memfd_create on FreeBSD 13 is SHM_ANON without sealing support
-	int fd = shm_open(SHM_ANON, O_RDWR, 0600);
-#else
-	char name[] = "/tmp/keymap-XXXXXX";
-	int fd = mkstemp(name);
-	unlink(name);
-#endif
-	if(ftruncate(fd, size) < 0) {
-		die("Could not allocate shm for keymap\n");
+	char sym_name[256];
+	int ret = xkb_keysym_get_name(keysym, sym_name, sizeof(sym_name));
+	if (ret <= 0) {
+		die("Unable to get XKB symbol name for keysym %04x\n", keysym);
+		return;
+	}
+	fprintf(f, "%s", sym_name);
+}
+
+static unsigned int
+append_keymap_entry(struct wlrctl_keyboard_command *cmd, wchar_t ch, xkb_keysym_t xkb)
+{
+	cmd->keymap_entries = realloc(
+		cmd->keymap_entries, ++cmd->keymap_entries_len * sizeof(cmd->keymap_entries[0])
+	);
+	cmd->keymap_entries[cmd->keymap_entries_len - 1].wchr = ch;
+	cmd->keymap_entries[cmd->keymap_entries_len - 1].xkb = xkb;
+	return cmd->keymap_entries_len;
+}
+
+static unsigned int
+get_key_code_by_wchar(struct wlrctl_keyboard_command *cmd, wchar_t ch)
+{
+	const struct {
+		wchar_t from;
+		xkb_keysym_t to;
+	} remap_table[] = {
+		{ L'\n', XKB_KEY_Return },
+		{ L'\t', XKB_KEY_Tab },
+		{ L'\e', XKB_KEY_Escape },
 	};
 
-	void *keymap_data =
-		mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-	strcpy(keymap_data, keymap_ascii_raw);
-	munmap(keymap_data, size);
+	for (unsigned int i = 0; i < cmd->keymap_entries_len; i++) {
+		if (cmd->keymap_entries[i].wchr == ch) {
+			return i + 1;
+		}
+	}
+
+	xkb_keysym_t xkb = xkb_utf32_to_keysym(ch);
+	for (size_t i = 0; i < sizeof(remap_table) / sizeof(remap_table[0]); i++) {
+		if (remap_table[i].from == ch) {
+			xkb = remap_table[i].to;
+			break;
+		}
+	}
+
+	return append_keymap_entry(cmd, ch, xkb);
+}
+
+static void
+upload_keymap(struct wlrctl_keyboard_command *cmd)
+{
+	char filename[] = "/tmp/wlrctl-keymap-XXXXXX";
+	int fd = mkstemp(filename);
+	if (fd < 0) {
+		die("Failed to create the temporary keymap file\n");
+	}
+	unlink(filename);
+	FILE *f = fdopen(fd, "w");
+
+	fprintf(f, "xkb_keymap {\n");
+	fprintf(
+		f,
+		"xkb_keycodes \"(unnamed)\" {\n"
+		"minimum = 8;\n"
+		"maximum = %ld;\n",
+		cmd->keymap_entries_len + 8 + 1
+	);
+	for (size_t i = 0; i < cmd->keymap_entries_len; i++) {
+		fprintf(f, "<K%ld> = %ld;\n", i + 1, i + 8 + 1);
+	}
+	fprintf(f, "};\n");
+
+	fprintf(f, "xkb_types \"(unnamed)\" { include \"complete\" };\n");
+	fprintf(f, "xkb_compatibility \"(unnamed)\" { include \"complete\" };\n");
+
+	fprintf(f, "xkb_symbols \"(unnamed)\" {\n");
+	for (size_t i = 0; i < cmd->keymap_entries_len; i++) {
+		fprintf(f, "key <K%ld> {[", i + 1);
+		print_keysym_name(cmd->keymap_entries[i].xkb, f);
+		fprintf(f, "]};\n");
+	}
+	fprintf(f, "};\n");
+	fprintf(f, "};\n");
+
+	fputc('\0', f);
+	fflush(f);
+	size_t keymap_size = ftell(f);
 
 	cmd->keymap.format = WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1;
 	cmd->keymap.fd = fd;
-	cmd->keymap.size = size;
+	cmd->keymap.size = keymap_size;
 }
 
 static void
-send_key(struct zwp_virtual_keyboard_v1 *kbd, char c)
+send_key(struct zwp_virtual_keyboard_v1 *kbd, unsigned int key_code)
 {
-	zwp_virtual_keyboard_v1_key(kbd, timestamp(), c - 8, WL_KEYBOARD_KEY_STATE_PRESSED);
-	zwp_virtual_keyboard_v1_key(kbd, timestamp(), c - 8, WL_KEYBOARD_KEY_STATE_RELEASED);
+	zwp_virtual_keyboard_v1_key(kbd, timestamp(), key_code, WL_KEYBOARD_KEY_STATE_PRESSED);
+	zwp_virtual_keyboard_v1_key(kbd, timestamp(), key_code, WL_KEYBOARD_KEY_STATE_RELEASED);
+}
+
+static wchar_t *
+decode_text(struct wlrctl_keyboard_command *cmd, const char *text)
+{
+	setlocale(LC_CTYPE, "");
+	size_t len = strlen(text) + 1;
+	wchar_t *wcs = malloc(len * sizeof(wchar_t));
+	mbstowcs(wcs, text, len);
+
+	for (size_t i = 0; wcs[i] != L'\0'; i++) {
+		get_key_code_by_wchar(cmd, wcs[i]);
+	}
+	return wcs;
 }
 
 static void
-keyboard_type(struct wlrctl_keyboard_command *cmd, const char *text)
+type_text(struct wlrctl_keyboard_command *cmd, wchar_t *wcs)
 {
-	int len = strlen(text);
-	for (int i = 0; i < len; i++) {
-		send_key(cmd->device, text[i]);
+	for (size_t i = 0; wcs[i] != L'\0'; i++) {
+		unsigned int key_code = get_key_code_by_wchar(cmd, wcs[i]);
+		send_key(cmd->device, key_code);
 	}
 }
 
@@ -86,17 +169,6 @@ parse_action(const char *action)
 	return matchtok(actions, action);
 }
 
-static bool
-is_ascii(const char str[])
-{
-	for (int i = 0; str[i] != '\0'; i++) {
-		if (!isascii(str[i])) {
-			return false;
-		}
-	}
-	return true;
-}
-
 void
 prepare_keyboard(struct wlrctl *state, int argc, char *argv[])
 {
@@ -116,12 +188,8 @@ prepare_keyboard(struct wlrctl *state, int argc, char *argv[])
 		if (argc < 2) {
 			die("Missing text to type!\n");
 		}
-		if (is_ascii(argv[1])) {
-			cmd->mods_depressed = 0;
-			cmd->text = strdup(argv[1]);
-		} else {
-			die("Only ascii strings are currently supported\n");
-		}
+		cmd->mods_depressed = 0;
+		cmd->text = strdup(argv[1]);
 		if (argc >= 3 && strcmp(argv[2], "modifiers")) {
 			die("Invalid argument: '%s'\n", argv[2]);
 		} else if (argc == 3) {
@@ -173,18 +241,20 @@ run_keyboard(struct wlrctl *state)
 	);
 
 	cmd->xkb_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-	get_keymap(cmd);
-
-	zwp_virtual_keyboard_v1_keymap(cmd->device,
-		cmd->keymap.format, cmd->keymap.fd, cmd->keymap.size
-	);
-	close(cmd->keymap.fd);
 
 	switch (cmd->action) {
-	case KEYBOARD_ACTION_TYPE:
+	case KEYBOARD_ACTION_TYPE: {
+		wchar_t *wcs = decode_text(cmd, cmd->text);
+		upload_keymap(cmd);
+		zwp_virtual_keyboard_v1_keymap(cmd->device,
+			cmd->keymap.format, cmd->keymap.fd, cmd->keymap.size
+		);
+		close(cmd->keymap.fd);
 		zwp_virtual_keyboard_v1_modifiers(cmd->device, cmd->mods_depressed, 0, 0, 0);
-		keyboard_type(cmd, cmd->text);
+		type_text(cmd, wcs);
+		free(wcs);
 		break;
+	}
 	default:
 		break;
 	}
@@ -197,5 +267,6 @@ void destroy_keyboard(struct wlrctl *state)
 {
 	struct wlrctl_keyboard_command *cmd = state->cmd;
 	zwp_virtual_keyboard_v1_destroy(cmd->device);
+	free(cmd->keymap_entries);
 	free(cmd);
 }

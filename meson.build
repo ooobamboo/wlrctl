@@ -33,7 +33,6 @@ subdir('protocol')
 
 src_files = [
 	'main.c',
-	'ascii_raw_keymap.c',
 	'keyboard.c',
 	'pointer.c',
 	'toplevel.c',

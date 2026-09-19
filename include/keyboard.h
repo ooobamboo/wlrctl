@@ -1,9 +1,17 @@
 #ifndef WLRCTL_DEV_KEYBOARD_H
 #define WLRCTL_DEV_KEYBOARD_H
 
+#include <wchar.h>
+#include <xkbcommon/xkbcommon.h>
+
 enum keyboard_action {
 	KEYBOARD_ACTION_UNSPEC = 0,
 	KEYBOARD_ACTION_TYPE,
+};
+
+struct keymap_entry {
+	xkb_keysym_t xkb;
+	wchar_t wchr;
 };
 
 struct wlrctl_keyboard_command {
@@ -18,6 +26,10 @@ struct wlrctl_keyboard_command {
 		uint32_t size;
 		int fd;
 	} keymap;
+
+	size_t keymap_entries_len;
+	struct keymap_entry *keymap_entries;
+
 	struct wlrctl *state;
 };
 
