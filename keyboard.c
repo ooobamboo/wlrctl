@@ -71,6 +71,17 @@ get_key_code_by_wchar(struct wlrctl_keyboard_command *cmd, wchar_t ch)
 	return append_keymap_entry(cmd, ch, xkb);
 }
 
+static unsigned int
+get_key_code_by_xkb(struct wlrctl_keyboard_command *cmd, xkb_keysym_t xkb)
+{
+	for (unsigned int i = 0; i < cmd->keymap_entries_len; i++) {
+		if (cmd->keymap_entries[i].xkb == xkb) {
+			return i + 1;
+		}
+	}
+	return append_keymap_entry(cmd, 0, xkb);
+}
+
 static void
 upload_keymap(struct wlrctl_keyboard_command *cmd)
 {
@@ -164,6 +175,7 @@ parse_action(const char *action)
 {
 	static const struct token actions[] = {
 		{"type", KEYBOARD_ACTION_TYPE},
+		{"key", KEYBOARD_ACTION_KEY},
 		{NULL, KEYBOARD_ACTION_UNSPEC}
 	};
 	return matchtok(actions, action);
@@ -224,6 +236,12 @@ prepare_keyboard(struct wlrctl *state, int argc, char *argv[])
 	case KEYBOARD_ACTION_UNSPEC:
 		die("Unknown keyboard action: '%s'\n", action);
 		break;
+	case KEYBOARD_ACTION_KEY:
+		if (argc < 2) {
+			die("Missing key name!\n");
+		}
+		cmd->key_name = strdup(argv[1]);
+		break;
 	}
 
 	cmd->state = state;
@@ -255,6 +273,20 @@ run_keyboard(struct wlrctl *state)
 		free(wcs);
 		break;
 	}
+	case KEYBOARD_ACTION_KEY: {
+		xkb_keysym_t ks = xkb_keysym_from_name(cmd->key_name, XKB_KEYSYM_CASE_INSENSITIVE);
+		if (ks == XKB_KEY_NoSymbol) {
+			die("Unknown key: '%s'\n", cmd->key_name);
+		}
+		unsigned int key_code = get_key_code_by_xkb(cmd, ks);
+		upload_keymap(cmd);
+		zwp_virtual_keyboard_v1_keymap(cmd->device,
+			cmd->keymap.format, cmd->keymap.fd, cmd->keymap.size
+		);
+		close(cmd->keymap.fd);
+		send_key(cmd->device, key_code);
+		break;
+	}
 	default:
 		break;
 	}
@@ -268,5 +300,6 @@ void destroy_keyboard(struct wlrctl *state)
 	struct wlrctl_keyboard_command *cmd = state->cmd;
 	zwp_virtual_keyboard_v1_destroy(cmd->device);
 	free(cmd->keymap_entries);
+	free(cmd->key_name);
 	free(cmd);
 }

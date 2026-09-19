@@ -7,6 +7,7 @@
 enum keyboard_action {
 	KEYBOARD_ACTION_UNSPEC = 0,
 	KEYBOARD_ACTION_TYPE,
+	KEYBOARD_ACTION_KEY,
 };
 
 struct keymap_entry {
@@ -17,6 +18,7 @@ struct keymap_entry {
 struct wlrctl_keyboard_command {
 	enum keyboard_action action;
 	char *text;
+	char *key_name;
 	int mods_depressed;
 
 	struct zwp_virtual_keyboard_v1 *device;
